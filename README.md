@@ -1,0 +1,1 @@
+# trading-confluence-app
