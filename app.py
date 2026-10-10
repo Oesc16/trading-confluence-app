@@ -179,19 +179,20 @@ def detect_rsi_divergences(df, window=5, lookback=60):
             
     return bullish_divs, bearish_divs
 
-# --- MOTOR DE CONFLUENCIA PONDERADO ---
+# --- MOTOR DE CONFLUENCIA PONDERADO Y REFINADO ---
 def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations, bull_divs, bear_divs):
     last = df.iloc[-1]
     score_bull, score_bear = 0, 0
     bullish_reasons, bearish_reasons = [], []
 
-    # 1. Alineación de Tendencia y Medias Móviles
+    has_high_volume = last['Volume'] > last['Vol_SMA']
+
     if last['Close'] > last['SMA_200']:
-        score_bull += 15
+        score_bull += 20
         bullish_reasons.append("Estructura sobre SMA 200 (Tendencia Principal Alcista)")
     else:
-        score_bear += 15
-        bearish_reasons.append("Estructura bajo SMA 200 (Tendencia Principal Bajista)")
+        score_bear += 20
+        bearish_reasons.append("Estructura bajo SMA 200 (Tendencia Principal Bajista - Sesgo Shorts)")
 
     if last['EMA_20'] > last['EMA_50']:
         score_bull += 10
@@ -200,7 +201,6 @@ def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations,
         score_bear += 10
         bearish_reasons.append("Cruce de Medias Bajista (EMA 20 < EMA 50)")
 
-    # 2. Divergencias y Osciladores RSI/Estocástico
     if len(bull_divs) > 0:
         score_bull += 15
         bullish_reasons.append("Divergencia Alcista RSI Confirmada")
@@ -208,12 +208,12 @@ def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations,
         score_bear += 15
         bearish_reasons.append("Divergencia Bajista RSI Confirmada")
 
-    if last['RSI'] < 35:
-        score_bull += 5
-        bullish_reasons.append(f"RSI en Zona de Sobreventa ({last['RSI']:.1f})")
-    elif last['RSI'] > 65:
-        score_bear += 5
-        bearish_reasons.append(f"RSI en Zona de Sobrecompra ({last['RSI']:.1f})")
+    if last['RSI'] < 30:
+        score_bull += 10
+        bullish_reasons.append(f"RSI en Sobreventa extrema ({last['RSI']:.1f})")
+    elif last['RSI'] > 70:
+        score_bear += 10
+        bearish_reasons.append(f"RSI en Sobrecompra extrema ({last['RSI']:.1f})")
 
     if last['Stoch_K'] < 20 and last['Stoch_K'] > last['Stoch_D']:
         score_bull += 5
@@ -222,7 +222,6 @@ def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations,
         score_bear += 5
         bearish_reasons.append("Cruce Bajista de Estocástico en Sobrecompra")
 
-    # 3. Patrones Chartistas
     for p_name, p_type, _, _ in chart_patterns:
         if p_type == "Bullish":
             score_bull += 25
@@ -231,7 +230,6 @@ def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations,
             score_bear += 25
             bearish_reasons.append(f"Patrón Chartista Bajista: {p_name}")
 
-    # 4. Volatilidad y Volumen Institucional
     if last['Close'] <= last['BB_Lower']:
         score_bull += 10
         bullish_reasons.append("Precio en la Banda Inferior de Bollinger")
@@ -239,41 +237,35 @@ def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations,
         score_bear += 10
         bearish_reasons.append("Precio en la Banda Superior de Bollinger")
 
-    if last['Volume'] > 1.3 * last['Vol_SMA']:
-        if last['Close'] > last['Open']:
-            score_bull += 5
-            bullish_reasons.append("Volumen Institucional superior a la media")
-        else:
-            score_bear += 5
-            bearish_reasons.append("Volumen Institucional superior a la media")
-
-    # 5. Patrones de Velas Japonesas
-    recent_candles = candle_annotations[-3:] if len(candle_annotations) >= 3 else candle_annotations
-    for _, _, label, col, _ in recent_candles:
+    if has_high_volume and candle_annotations:
+        recent_candle = candle_annotations[-1]
+        _, _, label, col, _ = recent_candle
         if col == "green":
-            score_bull += 5
-            bullish_reasons.append(f"Vela Alcista Reciente: {label}")
+            score_bull += 10
+            bullish_reasons.append(f"Vela Alcista con Volumen Institucional: {label}")
         elif col == "red":
-            score_bear += 5
-            bearish_reasons.append(f"Vela Bajista Reciente: {label}")
+            score_bear += 10
+            bearish_reasons.append(f"Vela Bajista con Volumen Institucional: {label}")
+    else:
+        if not has_high_volume:
+            bullish_reasons.append("Nota: Volumen bajo promedio (Filtro de velas neutralizado)")
 
-    # Cálculo final y Gestión de Riesgo (ATR)
     total_score = max(score_bull, score_bear)
     current_price = last['Close']
     atr_val = last['ATR'] if not np.isnan(last['ATR']) else current_price * 0.015
 
-    if score_bull >= 65 and score_bull > score_bear:
-        bias = "COMPRAR (ALTA CONFLUENCIA ALCISTA)"
+    if score_bull >= 72 and score_bull > score_bear:
+        bias = "COMPRAR (ALTA CONFLUENCIA)"
         sl = current_price - (1.5 * atr_val)
         tp = current_price + (3.0 * atr_val)
         confluence_pct = score_bull
-    elif score_bear >= 65 and score_bear > score_bull:
-        bias = "VENTAR (ALTA CONFLUENCIA BAJISTA)"
+    elif score_bear >= 72 and score_bear > score_bull:
+        bias = "VENTA (ALTA CONFLUENCIA)"
         sl = current_price + (1.5 * atr_val)
         tp = current_price - (3.0 * atr_val)
         confluence_pct = score_bear
     else:
-        bias = "NEUTRAL / NO OPERAR (CONFLUENCIA INSUFICIENTE)"
+        bias = "NEUTRAL / NO OPERAR (FILTRADO)"
         sl, tp = current_price, current_price
         confluence_pct = total_score
 
@@ -283,7 +275,6 @@ def evaluate_high_probability_confluence(df, chart_patterns, candle_annotations,
 st.title("🛡️ Institutional Confluence & Technical Analysis Suite")
 st.caption("Motor cuantitativo con validación de patrones chartistas, volumen e indicadores combinados")
 
-# Menú lateral
 st.sidebar.header("Parámetros del Activo")
 category = st.sidebar.selectbox("Categoría", list(ASSETS.keys()))
 asset_name = st.sidebar.selectbox("Activo", list(ASSETS[category].keys()))
@@ -292,7 +283,6 @@ ticker = ASSETS[category][asset_name]
 tf_selected = st.sidebar.selectbox("Temporalidad", list(TIMEFRAME_CONFIG.keys()), index=5)
 tf_params = TIMEFRAME_CONFIG[tf_selected]
 
-# Descarga de datos
 data = yf.download(ticker, period=tf_params["period"], interval=tf_params["interval"])
 
 if not data.empty:
@@ -308,7 +298,7 @@ if not data.empty:
         df, chart_patterns, candle_annotations, bull_divs, bear_divs
     )
     
-    # Métricas Principales
+    st.markdown("### 📊 Estado Actual del Motor Cuantitativo")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Precio Actual", f"${entry:.2f}")
     c2.metric("Sesgo de Operación", bias)
@@ -330,37 +320,42 @@ if not data.empty:
     with tabs[0]:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.75, 0.25])
         
-        # Velas Japonesas
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Precio"), row=1, col=1)
         
-        # Medias e Indicadores
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], line=dict(color='orange', width=1), name="EMA 20"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='cyan', width=1.5), name="SMA 200"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', dash='dash'), name="BB Sup."), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='gray', dash='dash'), name="BB Inf."), row=1, col=1)
         
-        # Anotaciones de Velas
-        for d_val, price_val, text_lbl, color_lbl, _ in candle_annotations[-10:]:
-            fig.add_annotation(x=d_val, y=price_val, text=text_lbl, showarrow=True, arrowhead=2, arrowcolor=color_lbl, font=dict(color=color_lbl, size=9), row=1, col=1)
+        if candle_annotations:
+            latest_candle = candle_annotations[-1]
+            d_val, price_val, text_lbl, color_lbl, _ = latest_candle
+            arrow_symbol = "triangle-up" if color_lbl == "green" else "triangle-down"
+            
+            fig.add_trace(go.Scatter(
+                x=[d_val], y=[price_val],
+                mode="markers+text",
+                marker=dict(symbol=arrow_symbol, size=12, color=color_lbl),
+                text=[f"  {text_lbl}"],
+                textposition="top center" if color_lbl == "green" else "bottom center",
+                textfont=dict(size=10, color=color_lbl),
+                name="Patrón Vela Reciente"
+            ), row=1, col=1)
 
-        # Anotaciones de Patrones Chartistas
         for p_name, p_type, p_date, p_price in chart_patterns:
             p_color = "lime" if p_type == "Bullish" else "red" if p_type == "Bearish" else "yellow"
             fig.add_annotation(x=p_date, y=p_price, text=f"📐 {p_name}", showarrow=True, arrowhead=4, arrowcolor=p_color, font=dict(color=p_color, size=11), row=1, col=1)
 
-        # Divergencias RSI en Gráfico de Precio
         for div in bull_divs:
             fig.add_trace(go.Scatter(x=[div['p1_date'], div['p2_date']], y=[div['p1_price'], div['p2_price']], mode="lines+markers", line=dict(color="lime", width=3), name="Div. Alcista"), row=1, col=1)
         for div in bear_divs:
             fig.add_trace(go.Scatter(x=[div['p1_date'], div['p2_date']], y=[div['p1_price'], div['p2_price']], mode="lines+markers", line=dict(color="crimson", width=3), name="Div. Bajista"), row=1, col=1)
 
-        # Niveles TP / SL
         if "COMPRAR" in bias or "VENTA" in bias:
             fig.add_hline(y=entry, line_dash="dash", line_color="blue", row=1, col=1)
             fig.add_hline(y=sl, line_dash="dash", line_color="red", row=1, col=1)
             fig.add_hline(y=tp, line_dash="dash", line_color="green", row=1, col=1)
 
-        # RSI
         fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=1.5), name="RSI (14)"), row=2, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
@@ -391,10 +386,10 @@ if not data.empty:
         * **Divergencia Alcista:** Se forma cuando el precio marca un mínimo más bajo pero el indicador RSI marca un mínimo más alto.
         * **Divergencia Bajista:** Ocurre cuando el precio marca un máximo más alto pero el RSI marca un máximo más bajo.
 
-        #### 3. Validación por Patrones Chartistas
+        #### 3. Validación por Patrones Chartistas y Volumen
+        * **Filtro Institucional:** Los patrones de velas requieren volumen superior a la media para aportar puntuación.
         * **Hombro-Cabeza-Hombro (HCH):** Patrón de cambio de tendencia bajista.
-        * **Triángulos (Ascendente/Descendente/Simétrico):** Patrones de consolidación y ruptura.
-        * **Banderas Alcistas/Bajistas:** Patrones de continuación de tendencia.
+        * **Triángulos y Banderas:** Patrones de consolidación, continuación y ruptura.
 
         #### 4. Gestión de Riesgo ATR (Average True Range)
         * **Stop Loss:** Se calcula a 1.5 veces el valor del ATR desde el precio de entrada.
